@@ -1,0 +1,31 @@
+ad_id,campaign_id,bid_cpm,keywords,creative
+# keywords are ';'-separated; creative is the rest of the line
+101,1,4.50,running shoes;marathon;jogging;cushioning;trail running,StrideMax Pro - lightweight running shoes
+102,1,3.80,fitness tracker;heart rate;steps;running,PulseBand - track every run
+103,1,2.90,gym;workout;strength training;dumbbells,IronCore home gym kits
+201,2,6.20,flights;cheap flights;airfare;booking;airline,SkyHop - compare flight prices
+202,2,5.10,hotels;resort;beach;vacation;holiday,StayEasy - hotels from 999/night
+203,2,4.40,trekking;himalaya;backpacking;mountains;adventure travel,Summit Trails - guided Himalayan treks
+301,3,7.80,credit card;cashback;rewards;bank,ZenCard - 5% cashback on everything
+302,3,8.40,mutual funds;sip;investing;stocks;portfolio,GrowWise - start a SIP in 2 minutes
+303,3,6.90,personal loan;emi;interest rate;loan,QuickLoan - instant approval
+401,4,5.60,laptop;gaming laptop;gpu;processor;ram,Voltbook X15 gaming laptop
+402,4,4.20,smartphone;camera phone;battery;android,Nova 12 - flagship camera phone
+403,4,3.70,headphones;noise cancelling;wireless earbuds;bluetooth,HushPods ANC earbuds
+501,5,2.40,recipes;cooking;kitchen;baking;chef,KitchenKraft cookware sets
+502,5,2.10,organic;groceries;vegetables;delivery,FreshBasket - groceries in 10 min
+601,6,3.30,gaming;video games;console;esports;multiplayer,PlayVerse - new releases every week
+602,6,2.80,gaming chair;mechanical keyboard;mouse;rgb,ProSeat gaming chairs
+701,7,2.60,sofa;furniture;home decor;interior design,Nestly modular sofas
+702,7,1.90,lamps;lighting;decor;living room,Lumen home lighting
+801,8,4.90,online course;programming;python;data science;machine learning,CodeCamp - learn ML online
+802,8,4.30,exam preparation;jee;coaching;mock tests,RankBoost JEE mock tests
+901,9,7.20,suv;car;sedan;test drive;mileage,Aurex SUV - book a test drive
+902,9,6.10,electric vehicle;ev;charging;battery range,Voltara EV - 500 km range
+903,9,3.20,car insurance;insurance;renewal;claim,SafeDrive car insurance
+1001,10,2.20,skincare;moisturizer;sunscreen;serum,GlowLab skincare
+1002,10,1.80,makeup;lipstick;foundation;beauty,Hue Cosmetics
+1101,11,2.70,dog food;pet care;puppy;cat food,PawPantry pet food
+1102,11,2.30,pet insurance;vet;pet health,FurSure pet insurance
+1201,12,3.90,camera;dslr;mirrorless;lens;photography,Aperture mirrorless cameras
+1202,12,2.50,tripod;photo editing;lightroom;photography,FrameKit photo gear
