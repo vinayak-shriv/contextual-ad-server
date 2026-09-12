@@ -2,15 +2,22 @@
 //
 //   1. Candidate retrieval: inverted index vs brute-force scan, across inventory sizes.
 //   2. End-to-end serve latency with and without the page-context cache (Zipf traffic).
-//   3. Throughput with N worker threads.
+//   3. Throughput scaling: QPS at 1, 2, 4 ... up to the machine's thread count.
 //
 // Usage: adserve_bench [--quick] [--threads N]
+//
+//   --threads N  measure only N threads instead of sweeping the scaling curve.
+//
+// Everything is written to std::cout. An earlier version mixed std::printf with
+// std::cout, and the two buffers reach a pipe in their own order: redirecting the
+// output to a file produced tables whose rows arrived before their headers.
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -26,6 +33,12 @@ namespace {
 
 double elapsed_us(Clock::time_point start) {
     return std::chrono::duration<double, std::micro>(Clock::now() - start).count();
+}
+
+std::string fixed(double value, int precision) {
+    std::ostringstream os;
+    os << std::fixed << std::setprecision(precision) << value;
+    return os.str();
 }
 
 struct LatencySummary {
@@ -85,7 +98,8 @@ void bench_retrieval(bool quick) {
 
         const double brute = time_per_query(true);
         const double indexed = time_per_query(false);
-        std::printf("| %zu | %.1f | %.1f | %.1fx |\n", n, brute, indexed, brute / indexed);
+        std::cout << "| " << n << " | " << fixed(brute, 1) << " | " << fixed(indexed, 1) << " | "
+                  << fixed(brute / indexed, 1) << "x |" << std::endl;
     }
 }
 
@@ -124,26 +138,33 @@ void bench_cache(bool quick) {
             g_sink += r.ad_id;
         }
         const auto s = summarize(latencies);
-        std::printf("| %s | %.1f%% | %.1f | %.1f | %.1f | %.1f |\n", use_cache ? "on" : "off",
-                    100.0 * server.stats().cache_hit_rate(), s.mean, s.p50, s.p95, s.p99);
+        std::cout << "| " << (use_cache ? "on" : "off") << " | "
+                  << fixed(100.0 * server.stats().cache_hit_rate(), 1) << "% | " << fixed(s.mean, 1)
+                  << " | " << fixed(s.p50, 1) << " | " << fixed(s.p95, 1) << " | "
+                  << fixed(s.p99, 1) << " |" << std::endl;
     }
 }
 
-void bench_throughput(bool quick, unsigned threads) {
-    synthetic::Config cfg;
-    cfg.num_ads = 10'000;
-    cfg.num_pages = quick ? 2'000 : 20'000;
-    const auto w = synthetic::generate(cfg);
-    const std::size_t per_thread = quick ? 10'000 : 100'000;
-
+// One row of the scaling table. A fresh server per row on purpose: frequency-cap
+// and budget state left over from a previous row would change the fill rate and
+// make the rows incomparable.
+double throughput_row(const synthetic::Workload& w, const synthetic::Config& cfg,
+                      std::size_t per_thread, unsigned threads, double baseline_qps) {
     AdServer server(w.ads, w.campaigns, ServerConfig{});
 
     // Warm-up pass so the cache state is realistic rather than cold.
+    //
+    // Distinct user ids matter here: warming with a single user trips the
+    // per-user frequency cap after three impressions, so the rest of the
+    // warm-up no-fills and drags the reported fill rate down. That is what
+    // made fill rate appear to climb with thread count -- more real requests
+    // diluting a fixed block of capped warm-up ones -- which says nothing
+    // about concurrency.
     {
         synthetic::ZipfSampler sampler(w.pages.size(), cfg.zipf_s, 99);
         for (std::size_t i = 0; i < per_thread / 4; ++i) {
             const auto& p = w.pages[sampler.next()];
-            server.serve({"warm", p.url, p.text, 0.5, 0});
+            server.serve({"warm" + std::to_string(i % cfg.num_users), p.url, p.text, 0.5, 0});
         }
     }
 
@@ -160,36 +181,76 @@ void bench_throughput(bool quick, unsigned threads) {
         });
     }
     for (auto& th : pool) th.join();
+
     const double seconds = elapsed_us(start) / 1e6;
     const double total = static_cast<double>(per_thread) * threads;
+    const double qps = total / seconds;
     const auto s = server.stats();
 
-    std::cout << "\n## 3. Throughput (engine only, no HTTP)\n\n"
-              << "| Threads | Requests | QPS | Fill rate | Cache hit rate |\n"
-              << "|---:|---:|---:|---:|---:|\n";
-    std::printf("| %u | %.0f | %.0f | %.1f%% | %.1f%% |\n", threads, total, total / seconds,
-                100.0 * s.fill_rate(), 100.0 * s.cache_hit_rate());
+    std::cout << "| " << threads << " | " << fixed(total, 0) << " | " << fixed(qps, 0) << " | ";
+    if (baseline_qps > 0.0) {
+        std::cout << fixed(qps / baseline_qps, 2) << "x";
+    } else {
+        std::cout << "1.00x";
+    }
+    std::cout << " | " << fixed(100.0 * s.fill_rate(), 1) << "% | "
+              << fixed(100.0 * s.cache_hit_rate(), 1) << "% |" << std::endl;
+    return qps;
+}
+
+void bench_throughput(bool quick, const std::vector<unsigned>& thread_counts) {
+    synthetic::Config cfg;
+    cfg.num_ads = 10'000;
+    cfg.num_pages = quick ? 2'000 : 20'000;
+    const auto w = synthetic::generate(cfg);
+    const std::size_t per_thread = quick ? 10'000 : 100'000;
+
+    std::cout << "\n## 3. Throughput scaling (engine only, no HTTP)\n\n"
+              << "| Threads | Requests | QPS | Speedup | Fill rate | Cache hit rate |\n"
+              << "|---:|---:|---:|---:|---:|---:|\n";
+
+    double baseline = 0.0;
+    for (unsigned threads : thread_counts) {
+        const double qps = throughput_row(w, cfg, per_thread, threads, baseline);
+        if (baseline == 0.0) baseline = qps;
+    }
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
     bool quick = false;
+    bool threads_given = false;
     unsigned threads = std::max(1u, std::thread::hardware_concurrency());
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--quick") quick = true;
-        else if (arg == "--threads" && i + 1 < argc) threads = static_cast<unsigned>(std::stoul(argv[++i]));
-        else {
+        if (arg == "--quick") {
+            quick = true;
+        } else if (arg == "--threads" && i + 1 < argc) {
+            threads = static_cast<unsigned>(std::stoul(argv[++i]));
+            threads_given = true;
+        } else {
             std::cerr << "usage: adserve_bench [--quick] [--threads N]\n";
             return 2;
         }
     }
+    if (threads == 0) threads = 1;
+
+    // Default: sweep 1, 2, 4 ... up to the machine's thread count, so the table
+    // shows how throughput scales rather than a single number whose meaning
+    // depends on hardware nobody else has. --threads N measures just N.
+    std::vector<unsigned> thread_counts;
+    if (threads_given) {
+        thread_counts.push_back(threads);
+    } else {
+        for (unsigned t = 1; t < threads; t *= 2) thread_counts.push_back(t);
+        thread_counts.push_back(threads);
+    }
 
     std::cout << "# adserve benchmark" << (quick ? " (quick)" : "") << "\n"
-              << "hardware threads: " << std::thread::hardware_concurrency() << "\n";
+              << "hardware threads: " << std::thread::hardware_concurrency() << std::endl;
     bench_retrieval(quick);
     bench_cache(quick);
-    bench_throughput(quick, threads);
+    bench_throughput(quick, thread_counts);
     return g_sink.load() == 0xFFFFFFFF ? 1 : 0;  // practically never; just consumes the sink
 }
