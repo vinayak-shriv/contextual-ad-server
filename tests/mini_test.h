@@ -39,18 +39,44 @@ inline void report_failure(const char* file, int line, const std::string& msg) {
     std::cerr << "    FAIL " << file << ":" << line << "  " << msg << "\n";
 }
 
-inline int run_all() {
+// Runs every registered test whose name contains one of `filters` (no filters
+// runs everything). Several filters can be given, which is what makes it
+// possible to run an exact subset -- two tests that only misbehave together,
+// say -- rather than one test or all of them.
+//
+// Each result line is flushed as it is produced: if a test takes the whole
+// process down, buffered progress is lost and the log stops nowhere in
+// particular, exactly when you most need to know which test was running.
+inline int run_all(const std::vector<std::string>& filters = {}) {
+    auto selected = [&filters](const std::string& name) {
+        if (filters.empty()) return true;
+        for (const auto& f : filters) {
+            if (name.find(f) != std::string::npos) return true;
+        }
+        return false;
+    };
+
     int failed_tests = 0;
+    int ran = 0;
     for (const auto& t : registry()) {
+        if (!selected(t.name)) continue;
+        ++ran;
         const int before = failures();
         t.fn();
         const bool ok = failures() == before;
         if (!ok) ++failed_tests;
-        std::cout << (ok ? "[ PASS ] " : "[ FAIL ] ") << t.name << "\n";
+        std::cout << (ok ? "[ PASS ] " : "[ FAIL ] ") << t.name << std::endl;
     }
-    std::cout << "\n" << registry().size() - failed_tests << "/" << registry().size()
-              << " tests passed\n";
-    return failed_tests == 0 ? 0 : 1;
+    std::cout << "\n" << ran - failed_tests << "/" << ran << " tests passed";
+    if (!filters.empty()) std::cout << "  (" << ran << " selected by filter)";
+    std::cout << std::endl;
+    // A filter that matches nothing is a typo, not a pass.
+    return failed_tests == 0 && ran > 0 ? 0 : 1;
+}
+
+inline void list_tests() {
+    for (const auto& t : registry()) std::cout << t.name << "\n";
+    std::cout << std::flush;
 }
 
 }  // namespace mini_test
