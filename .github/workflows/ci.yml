@@ -15,6 +15,11 @@ jobs:
         run: cmake --build build -j
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      # The unit tests never speak HTTP, so handler-level input validation is
+      # invisible to them -- which is how a NaN floor once reached a
+      # NaN-to-integer conversion. This drives a real server over curl.
+      - name: Smoke-test the HTTP layer
+        run: bash scripts/smoke_test.sh
       - name: Benchmark (quick)
         run: ./build/adserve_bench --quick
 
