@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <memory>
+#include <mutex>
 #include <queue>
+#include <vector>
 
 #include "adserve/tokenizer.h"
 
@@ -22,6 +26,43 @@ void normalize(SparseVector& v) {
     if (norm_sq == 0.0) return;
     const float inv = static_cast<float>(1.0 / std::sqrt(norm_sq));
     for (auto& entry : v) entry.second *= inv;
+}
+
+// Scratch buffers for the indexed scan, one set per thread.
+struct Scratch {
+    std::vector<float> scores;             // partial dot products, indexed by ad position
+    std::vector<std::uint32_t> touched;    // which positions this query wrote to
+};
+
+// The obvious spelling is two function-local `thread_local` vectors, and that is
+// what this was. It costs one destructor registration per thread, and on
+// mingw-w64 the teardown of that list corrupts the heap when several threads
+// exit at once: the suite died on 10 runs out of 10, every backtrace inside
+// tls_callback -> run_dtor_list -> ~vector, and linking the runtime statically
+// (no source change at all) moved it to 2 out of 10. The same commit is clean
+// under ThreadSanitizer and AddressSanitizer on Linux, so the buffers are not
+// the problem -- registering a per-thread destructor for them is.
+//
+// So the thread_local here is a raw pointer, which is trivially destructible and
+// registers no teardown callback. The buffers are owned by a process-wide list
+// and freed at exit, which keeps LeakSanitizer quiet in CI. The hot path is
+// unchanged: one TLS load, no allocation once the buffers have grown.
+//
+// The buffers of a thread that exits are kept, not reused, so the memory held is
+// proportional to the peak thread count. For a server with a fixed worker pool
+// that is a handful of allocations; for a program that spawns threads without
+// bound it would need a free list.
+Scratch& thread_scratch() {
+    static std::mutex owner_mu;
+    static std::vector<std::unique_ptr<Scratch>> owned;
+    thread_local Scratch* mine = [] {
+        auto holder = std::make_unique<Scratch>();
+        Scratch* raw = holder.get();
+        std::lock_guard<std::mutex> lock(owner_mu);
+        owned.push_back(std::move(holder));
+        return raw;
+    }();
+    return *mine;
 }
 
 }  // namespace
@@ -133,10 +174,13 @@ std::vector<Candidate> ContextIndex::select_top_k(std::vector<Candidate> scored,
 
 std::vector<Candidate> ContextIndex::top_k(const SparseVector& page, std::size_t k,
                                            float min_relevance) const {
-    // Scratch buffers are thread_local so concurrent requests never share them and
-    // we avoid allocating a fresh score array on every request.
-    thread_local std::vector<float> scores;
-    thread_local std::vector<std::uint32_t> touched;
+    // Per-thread scratch, so concurrent requests never share a buffer and nothing
+    // is allocated per request once the buffers have grown. See thread_scratch()
+    // for why these are reached through a pointer rather than being thread_local
+    // objects in their own right.
+    Scratch& scratch = thread_scratch();
+    std::vector<float>& scores = scratch.scores;
+    std::vector<std::uint32_t>& touched = scratch.touched;
     if (scores.size() < ad_vectors_.size()) scores.resize(ad_vectors_.size(), 0.0f);
     touched.clear();
 
