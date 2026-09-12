@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
@@ -128,7 +129,11 @@ int main(int argc, char** argv) {
             } catch (const std::exception&) {
                 return send_error(res, 400, "floor must be a number");
             }
-            if (ad_req.floor_cpm < 0) return send_error(res, 400, "floor must be >= 0");
+            // std::stod("nan") succeeds, and NaN compares false against
+            // everything, so a bare `< 0` test lets it straight through.
+            if (!std::isfinite(ad_req.floor_cpm) || ad_req.floor_cpm < 0) {
+                return send_error(res, 400, "floor must be a finite number >= 0");
+            }
         }
 
         const adserve::AdResponse r = engine.serve(ad_req);

@@ -1,6 +1,7 @@
 #include "adserve/ad_server.h"
 
 #include <chrono>
+#include <cmath>
 #include <stdexcept>
 #include <utility>
 
@@ -71,6 +72,15 @@ AdResponse AdServer::serve(const AdRequest& request) {
         return response;
     };
 
+    // A NaN reserve passes every comparison below -- `bid < NaN` is false -- so it
+    // survives the filters and reaches cpm_to_micros_per_impression, where
+    // converting NaN to an integer is undefined behaviour. Treat NaN and negative
+    // reserves as "no reserve". Infinity is deliberately left alone: it means
+    // nothing can clear the floor, which the filter below reports as BelowFloor
+    // without ever converting a price.
+    const double floor_cpm =
+        (std::isnan(request.floor_cpm) || request.floor_cpm < 0.0) ? 0.0 : request.floor_cpm;
+
     // 1. Page context.
     bool cache_hit = false;
     const auto page = page_context(request, cache_hit);
@@ -93,7 +103,7 @@ AdResponse AdServer::serve(const AdRequest& request) {
     bool any_above_floor = false;
     for (const Candidate& c : candidates) {
         const Ad& ad = ads_[c.ad_index];
-        if (ad.bid_cpm < request.floor_cpm) continue;
+        if (ad.bid_cpm < floor_cpm) continue;
         any_above_floor = true;
         if (!freq_caps_.allowed(request.user_id, ad.campaign, request.now_ms)) continue;
         if (!budgets_.can_afford(ad.campaign, cpm_to_micros_per_impression(ad.bid_cpm))) continue;
@@ -113,7 +123,7 @@ AdResponse AdServer::serve(const AdRequest& request) {
     // impression (under the shard lock), refunding the reservation if the second step
     // fails. On failure the winner is dropped and the auction re-run on the rest.
     while (!bids.empty()) {
-        const AuctionResult result = run_second_price_auction(bids, request.floor_cpm);
+        const AuctionResult result = run_second_price_auction(bids, floor_cpm);
         if (!result.has_winner) break;
 
         const Bid& winner = bids[result.winner];

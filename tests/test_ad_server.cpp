@@ -1,3 +1,5 @@
+#include <cmath>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <string>
@@ -67,6 +69,31 @@ TEST(server_respects_publisher_floor) {
     CHECK(lone.filled);
     CHECK_EQ(lone.ad_id, 1u);
     CHECK_NEAR(lone.price_cpm, 4.0, 1e-9);  // lone bidder pays the floor
+}
+
+// Found by reading the filter, not by a crash: a NaN reserve passes every
+// comparison (`bid < NaN` is false), so it used to reach the price conversion
+// and turn a NaN into an integer, which is undefined behaviour. On x86 that
+// happened to produce INT64_MIN, try_spend rejected the negative amount, and the
+// request quietly reported capped_or_no_budget -- a wrong answer with no symptom.
+TEST(server_treats_a_nonsense_floor_as_no_reserve) {
+    AdServer server(small_inventory(), big_budgets(), ServerConfig{});
+
+    const auto nan_floor = server.serve(
+        request("u1", "/run", kRunningPage, std::numeric_limits<double>::quiet_NaN()));
+    CHECK(nan_floor.filled);
+    CHECK(std::isfinite(nan_floor.price_cpm));
+    CHECK(nan_floor.price_cpm >= 0.0);
+
+    const auto negative = server.serve(request("u2", "/run", kRunningPage, -5.0));
+    CHECK(negative.filled);
+    CHECK(negative.price_cpm >= 0.0);
+
+    // Infinity is different: it is a coherent reserve that nothing can clear.
+    const auto infinite = server.serve(
+        request("u3", "/run", kRunningPage, std::numeric_limits<double>::infinity()));
+    CHECK(!infinite.filled);
+    CHECK(infinite.reason == NoFillReason::BelowFloor);
 }
 
 TEST(server_frequency_cap_rotates_to_next_campaign_then_stops) {
