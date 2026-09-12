@@ -251,15 +251,14 @@ caught:
 - **A crash the tests hid.** The suite passed test by test and died with heap corruption when
   run as a whole. Making the harness able to run one test per process, then libstdc++ debug
   mode, a standalone reproducer and a static-runtime link, separated "a bug in this code"
-  from "a bug in the runtime"; Linux sanitizers cleared the code before I changed it
-  (`9615896`).
+  from "a bug in the runtime"; Linux sanitizers cleared the code before I changed it.
 - **A bug no test caught.** `bid < NaN` is false, so `floor=nan` passed every eligibility
   check and reached a NaN-to-integer conversion — undefined behaviour that on x86 quietly
   returned the wrong no-fill reason instead of crashing. Found by reading the filter, fixed
-  at both the engine and the HTTP boundary (`87d6b8f`).
+  at both the engine and the HTTP boundary.
 - **Numbers that were not measurements.** The benchmark mixed `printf` with `cout`, so
   redirecting it to a file scrambled the tables; and its warm-up used a single user id, which
   tripped the frequency cap and turned the reported fill rate into an artifact of how many
-  requests followed it (`c1de453`).
+  requests followed it.
 
 Every design decision, test and benchmark here is one I have run and can defend.
