@@ -38,17 +38,26 @@ are never touched.
 
 Implementation details:
 
-- Scores accumulate in a dense `thread_local` array indexed by ad position, plus a list of
-  touched positions to reset afterwards. `thread_local` means concurrent requests never
-  share the buffer and nothing is allocated per request.
+- Scores accumulate in a dense per-thread array indexed by ad position, plus a list of
+  touched positions to reset afterwards, so concurrent requests never share a buffer and
+  nothing is allocated per request once the buffers have grown. These started as two
+  function-local `thread_local` vectors; they are now reached through a `thread_local`
+  raw pointer, with the buffers owned by a process-wide list. That is a workaround for a
+  mingw-w64 bug rather than a design preference — a `thread_local` with a non-trivial
+  destructor registers a per-thread teardown callback, and that teardown corrupts the heap
+  when several threads exit at once. The evidence table is in the README's Portability
+  section; the short version is that Linux sanitizers are clean on the original code and
+  merely linking the runtime statically changed the failure rate, which no logic bug here
+  could do. A raw pointer is trivially destructible, so nothing is registered.
 - **Top-K uses a size-K min-heap**: O(n log K) instead of sorting all n scores (O(n log n)).
 - Ties break on lower ad index, so results are deterministic.
 - Both paths add contributions in the same (ascending term id) order, so their floating
   point scores are bit-identical. That is what allows the differential test to demand an
   *exact* match between the two paths, not an approximate one.
 
-Measured: 55x faster at 1k ads, 268x at 10k, 515x at 50k. The gap widens because brute
-force scales with inventory size while the index scales with posting-list length.
+Measured (median of three runs on the machine named in the README): 36x faster at 1k ads,
+184x at 10k, 410x at 50k. The gap widens because brute force scales with inventory size
+while the index scales with posting-list length.
 
 ## 4. Page-context cache: sharded LRU
 
@@ -67,8 +76,9 @@ page vector is cached by URL.
 - **Known gap:** no TTL, so page edits are not seen until eviction. A production version
   would store an insertion time and treat old entries as misses.
 
-Measured: 80% hit rate under Zipf traffic; mean latency 70.7 -> 26.7 us, p50 67.9 -> 15.0 us.
-p99 improves less (113.5 -> 97.6 us) because the tail is dominated by cache misses.
+Measured: 80.4% hit rate under Zipf traffic; mean latency 58.2 -> 24.5 us, p50 56.6 -> 14.6 us.
+p99 improves far less (91.3 -> 83.9 us) because the tail is made of cache misses, which the
+cache by definition cannot help.
 
 ## 5. Auction: quality-weighted second price
 
@@ -131,6 +141,14 @@ The concurrency test checks the result: after 24,000 concurrent requests with ti
 budgets, every campaign's ledger spend equals the sum of the prices returned to callers.
 A missing refund would break that equality.
 
+One deliberate asymmetry: the budget pre-filter asks whether the campaign can afford the
+ad's *full bid*, not the price it would actually pay, which is at most the bid and often
+less. The stricter test is the right one. A bidder that cannot cover its own bid should not
+be in the auction at all, because a bidder that loses still sets the price the winner pays —
+letting one compete on money it does not have would charge the winner against a bid nobody
+could have honoured. The cost is that a campaign stops serving slightly before its budget is
+literally exhausted.
+
 ## 9. Frequency capping: fixed window, lock-striped
 
 One counter per (user, campaign): `{window_start, count}`. When a request arrives after the
@@ -168,7 +186,14 @@ by one event, which doesn't matter for ranking.
 | Frequency caps | mutable | 16 mutex-guarded shards |
 | Budgets | mutable | per-campaign atomic + CAS |
 | CTR counters, metrics | mutable | relaxed atomics |
-| Retrieval scratch buffers | per request | `thread_local` |
+| Retrieval scratch buffers | one set per thread | reached via a `thread_local` pointer, owned process-wide (see 3) |
+
+What that model actually buys, measured: 3.2x throughput at 4 threads, 4.4x at 8 (the
+physical core count), 4.9x at 16 SMT threads. The shortfall is not contention on any one
+structure — the sharding exists to prevent that — but per-request allocation: each request
+builds a page vector, a candidate list and a bid list, so threads meet each other in the
+allocator and on memory bandwidth. A per-request arena is the next thing worth trying, and
+it would be measurable against exactly this table.
 
 ## 12. Observability
 
