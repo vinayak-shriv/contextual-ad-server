@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_set>
@@ -55,6 +56,13 @@ std::uint32_t parse_id(const std::string& s, const std::string& path, int line_n
         std::size_t used = 0;
         const unsigned long v = std::stoul(s, &used);
         if (used != s.size()) fail(path, line_no, "invalid id '" + s + "'");
+        // unsigned long is 64-bit on Linux and 32-bit on Windows. Without this
+        // check "4294967297" silently truncates to 1 on Linux -- so two rows that
+        // look distinct collide, and the duplicate-id check fires on the wrong
+        // one -- while the same file is rejected on Windows.
+        if (v > std::numeric_limits<std::uint32_t>::max()) {
+            fail(path, line_no, "id out of range '" + s + "'");
+        }
         return static_cast<std::uint32_t>(v);
     } catch (const std::logic_error&) {
         fail(path, line_no, "invalid id '" + s + "'");

@@ -337,3 +337,22 @@ TEST(loader_parses_valid_files_and_rejects_bad_rows) {
     std::remove(campaigns_path.c_str());
     std::remove(ads_path.c_str());
 }
+
+// Ids are uint32. std::stoul returns unsigned long, which is 64-bit on Linux and
+// 32-bit on Windows, so before the range check this row loaded as ad id 1 on
+// Linux and was rejected on Windows -- the same file, two different inventories.
+TEST(loader_rejects_an_id_too_large_for_32_bits) {
+    const std::string ads_path = "test_ads_big_id.csv";
+    {
+        std::ofstream a(ads_path);
+        a << "4294967297,1,1.00,shoes,X\n";  // 2^32 + 1, truncates to 1
+    }
+    bool threw = false;
+    try {
+        load_ads(ads_path);
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find(":1:") != std::string::npos;
+    }
+    CHECK(threw);
+    std::remove(ads_path.c_str());
+}
